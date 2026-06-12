@@ -33,7 +33,7 @@ input int      RetestBufferPoints = 30;     // Retest zone buffer (points)
 input int      MinBodyPoints      = 50;     // Confirmation: min candle body (points)
 input double   MinBodyRatio       = 0.60;   // Confirmation: min body/range ratio (0..1)
 input int      SLBufferPoints     = 30;     // SL buffer beyond confirmation candle (points)
-input bool     AddSpreadToSL      = true;   // Add live spread to SELL SL (wide-spread symbols e.g. BTC)
+input bool     AddSpreadToSL      = true;   // Add live spread to SL buffer (wide-spread symbols e.g. BTC)
 input double   RiskRewardRatio    = 2.0;    // TP = SL distance x RR
 input bool     AllowBuy           = true;   // Allow BUY setups
 input bool     AllowSell          = true;   // Allow SELL setups
@@ -387,11 +387,13 @@ void EnterTrade(const double confirmHigh, const double confirmLow)
 
    if(g_dir > 0)
      {
-      //--- BUY: filled at Ask, but SL/TP are triggered by Bid.
-      //    Chart prices (candle low) are Bid prices, so no spread
-      //    adjustment is needed on the SL itself.
+      //--- BUY: filled at Ask, SL/TP triggered by Bid. The extra
+      //    spread below the confirmation candle keeps the stop from
+      //    being clipped by spread spikes on wide-spread symbols.
       entry = ask;
       sl    = confirmLow - slBuffer;
+      if(AddSpreadToSL)
+         sl -= spread;
       if(bid - sl < minDist)
          sl = bid - minDist;
       if(sl >= entry)

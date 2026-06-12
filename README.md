@@ -67,7 +67,7 @@ Expert Advisor สำหรับ MetaTrader 5 ที่เทรดตามร
 | `MinBodyPoints` | 50 | ขนาดเนื้อเทียนขั้นต่ำของแท่งคอนเฟิร์ม (points) |
 | `MinBodyRatio` | 0.60 | สัดส่วน body/range ขั้นต่ำ (กรองแท่ง doji/ไส้ยาว) |
 | `SLBufferPoints` | 30 | ระยะเผื่อ SL ใต้/เหนือแท่งคอนเฟิร์ม (points) |
-| `AddSpreadToSL` | true | บวก spread ปัจจุบันเข้า SL ฝั่ง Sell อัตโนมัติ (จำเป็นกับ symbol spread กว้าง เช่น BTC) |
+| `AddSpreadToSL` | true | ขยาย SL ทั้งสองฝั่งด้วย spread ปัจจุบันอัตโนมัติ (จำเป็นกับ symbol spread กว้าง เช่น BTC) |
 | `RiskRewardRatio` | 2.0 | TP = ระยะ SL × ค่านี้ |
 | `AllowBuy` / `AllowSell` | true | เปิด/ปิดการเทรดแต่ละฝั่ง |
 | `UseRiskPercent` | true | คำนวณ lot จาก % ความเสี่ยง (false = ใช้ `FixedLot`) |
@@ -106,8 +106,9 @@ Expert Advisor สำหรับ MetaTrader 5 ที่เทรดตามร
 
 EA จัดการให้อัตโนมัติ:
 
-- `AddSpreadToSL = true` → ฝั่ง Sell จะบวก spread ขณะเข้าออเดอร์เพิ่มเข้าไปใน SL
-  (ฝั่ง Buy ไม่ต้องบวก เพราะ SL ฝั่ง Buy ทำงานด้วยราคา Bid ตรงกับกราฟอยู่แล้ว)
+- `AddSpreadToSL = true` → ขยายระยะ SL ด้วย spread ขณะเข้าออเดอร์ **ทั้งสองฝั่ง**
+  - **Sell**: SL = High แท่งคอนเฟิร์ม + buffer + spread (กัน Ask แตะ SL ทั้งที่กราฟยังไม่ถึงเส้น)
+  - **Buy**: SL = Low แท่งคอนเฟิร์ม − buffer − spread (เผื่อ spread ถ่างชั่วคราวช่วงข่าว/ตลาดเปิด)
 - ระยะ SL ที่กว้างขึ้นถูกนำไปคิด lot ตาม `RiskPercent` ด้วย ความเสี่ยงต่อไม้จึงเท่าเดิม
 - SL/TP ถูกตรวจกับระยะขั้นต่ำของโบรกเกอร์ (stops level) ให้เสมอ จะไม่โดน reject
 - ขนาด spread และระยะ SL จริง (เป็น points) ถูกพิมพ์ลง log ทุกครั้งที่เข้าออเดอร์
