@@ -44,6 +44,16 @@ input bool     UseRiskPercent     = true;   // Size lot by risk percent (else fi
 input double   RiskPercent        = 1.0;    // Risk per trade (% of balance)
 input double   FixedLot           = 0.01;   // Fixed lot (when UseRiskPercent = false)
 
+//--- Trailing / lock profit (distances measured in R = initial SL distance)
+input group "=== Trailing / lock profit ==="
+input bool     UseBreakEven       = true;   // Lock profit: move SL once price is in profit
+input double   BreakEvenTriggerRR = 1.0;    // Lock when profit reaches X * initial SL distance
+input double   BreakEvenLockRR    = 0.2;    // Lock SL at entry + X * initial SL distance
+input bool     UseTrailing        = true;   // Trail SL behind price
+input double   TrailStartRR       = 1.0;    // Start trailing after profit of X * initial SL distance
+input double   TrailDistanceRR    = 0.8;    // Keep SL X * initial SL distance behind price
+input int      TrailStepPoints    = 10;     // Min SL improvement before modifying (points)
+
 //--- Limits / misc
 input group "=== Limits / misc ==="
 input int      MaxTradesPerDay    = 1;      // Max trades per day
@@ -116,6 +126,10 @@ void OnTick()
    if(day != g_currentDay)
       ResetDay(day);
 
+   //--- manage open positions (breakeven / trailing) on every tick,
+   //    independent of the setup state machine
+   ManagePositions();
+
    //--- step 1: capture the opening range from the first M5 candle
    if(g_state == ST_WAIT_RANGE)
      {
@@ -157,6 +171,7 @@ void ResetDay(const datetime dayStart)
    g_lastM1Bar    = 0;
    g_tradesToday  = 0;
    //--- objects of previous days are kept on the chart for review
+   CleanupRiskVars();
   }
 
 //+------------------------------------------------------------------+
@@ -509,6 +524,121 @@ double CalcLot(const double slDistance)
    lot = MathMax(minLot, MathMin(maxLot, lot));
 
    return(NormalizeDouble(lot, 2));
+  }
+
+//+------------------------------------------------------------------+
+//| Breakeven (lock profit) + trailing stop management               |
+//|                                                                  |
+//| All distances are expressed in R = the initial SL distance of    |
+//| the trade, so the behavior scales automatically with each        |
+//| setup's risk (works on gold and BTC alike without re-tuning).    |
+//| The initial risk of each position is remembered in a terminal    |
+//| global variable so it survives EA/terminal restarts.            |
+//+------------------------------------------------------------------+
+void ManagePositions()
+  {
+   if(!UseBreakEven && !UseTrailing)
+      return;
+
+   double bid     = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask     = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double minDist = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   double minStep = TrailStepPoints * _Point;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber)
+         continue;
+
+      long   type  = PositionGetInteger(POSITION_TYPE);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl    = PositionGetDouble(POSITION_SL);
+      double tp    = PositionGetDouble(POSITION_TP);
+      if(sl <= 0.0)
+         continue;
+
+      //--- initial risk distance, captured the first time we see the
+      //    position (before any SL modification) and persisted
+      string gvName = "NYOS_risk_" + (string)ticket;
+      double risk;
+      if(GlobalVariableCheck(gvName))
+         risk = GlobalVariableGet(gvName);
+      else
+        {
+         risk = MathAbs(entry - sl);
+         if(risk <= 0.0)
+            continue;
+         GlobalVariableSet(gvName, risk);
+        }
+
+      double newSL = sl;
+
+      if(type == POSITION_TYPE_BUY)
+        {
+         double profit = bid - entry; // BUY SL/TP trigger on Bid
+
+         if(UseBreakEven && profit >= BreakEvenTriggerRR * risk)
+            newSL = MathMax(newSL, entry + BreakEvenLockRR * risk);
+
+         if(UseTrailing && profit >= TrailStartRR * risk)
+            newSL = MathMax(newSL, bid - TrailDistanceRR * risk);
+
+         //--- respect the broker minimum stop distance
+         newSL = MathMin(newSL, bid - minDist);
+
+         if(newSL - sl >= minStep && newSL < bid)
+           {
+            newSL = NormalizeDouble(newSL, _Digits);
+            if(trade.PositionModify(ticket, newSL, tp))
+               PrintFormat("NYOpenScalper: BUY #%I64u SL moved to %s (profit %.2fR)",
+                           ticket, DoubleToString(newSL, _Digits), profit / risk);
+           }
+        }
+      else // POSITION_TYPE_SELL
+        {
+         double profit = entry - ask; // SELL SL/TP trigger on Ask
+
+         double cand = newSL;
+         if(UseBreakEven && profit >= BreakEvenTriggerRR * risk)
+            cand = MathMin(cand, entry - BreakEvenLockRR * risk);
+
+         if(UseTrailing && profit >= TrailStartRR * risk)
+            cand = MathMin(cand, ask + TrailDistanceRR * risk);
+
+         //--- respect the broker minimum stop distance
+         cand = MathMax(cand, ask + minDist);
+
+         if(sl - cand >= minStep && cand > ask)
+           {
+            cand = NormalizeDouble(cand, _Digits);
+            if(trade.PositionModify(ticket, cand, tp))
+               PrintFormat("NYOpenScalper: SELL #%I64u SL moved to %s (profit %.2fR)",
+                           ticket, DoubleToString(cand, _Digits), profit / risk);
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Delete stored risk variables of positions that no longer exist   |
+//+------------------------------------------------------------------+
+void CleanupRiskVars()
+  {
+   for(int i = GlobalVariablesTotal() - 1; i >= 0; i--)
+     {
+      string name = GlobalVariableName(i);
+      if(StringFind(name, "NYOS_risk_") != 0)
+         continue;
+
+      ulong ticket = (ulong)StringToInteger(StringSubstr(name, StringLen("NYOS_risk_")));
+      if(!PositionSelectByTicket(ticket))
+         GlobalVariableDel(name);
+     }
   }
 
 //+------------------------------------------------------------------+

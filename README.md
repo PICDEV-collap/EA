@@ -73,10 +73,34 @@ Expert Advisor สำหรับ MetaTrader 5 ที่เทรดตามร
 | `UseRiskPercent` | true | คำนวณ lot จาก % ความเสี่ยง (false = ใช้ `FixedLot`) |
 | `RiskPercent` | 1.0 | % ของ balance ที่เสี่ยงต่อไม้ |
 | `FixedLot` | 0.01 | lot คงที่ เมื่อปิด `UseRiskPercent` |
+| `UseBreakEven` | true | เปิดระบบ lock profit (เลื่อน SL เมื่อกำไรถึงเป้า) |
+| `BreakEvenTriggerRR` | 1.0 | กำไรถึงกี่ R จึงเริ่ม lock (R = ระยะ SL เริ่มต้นของไม้นั้น) |
+| `BreakEvenLockRR` | 0.2 | lock SL ไว้ที่กำไรกี่ R (0 = เลื่อนไปที่ทุนพอดี) |
+| `UseTrailing` | true | เปิดระบบ trailing stop |
+| `TrailStartRR` | 1.0 | กำไรถึงกี่ R จึงเริ่ม trail |
+| `TrailDistanceRR` | 0.8 | ระยะที่ SL ตามหลังราคา (หน่วย R) |
+| `TrailStepPoints` | 10 | SL ต้องขยับดีขึ้นอย่างน้อยกี่ points จึงส่งคำสั่งแก้ไข |
 | `MaxTradesPerDay` | 1 | จำนวนไม้สูงสุดต่อวัน |
 | `MagicNumber` | 20260611 | เลขแยกออเดอร์ของ EA |
 | `DrawRangeLines` | true | วาดเส้น High/Low ของกรอบบนกราฟ |
 | `DrawSignals` | true | วาดสัญลักษณ์ breakout / retest / confirm / entry บนกราฟ |
+
+### Trailing Stop และ Lock Profit
+
+ระยะทั้งหมดวัดเป็น **R** (= ระยะ SL เริ่มต้นของไม้นั้น ๆ) จึงปรับขนาดตามความผันผวน
+ของแต่ละ setup อัตโนมัติ — ใช้ค่าเดียวกันได้ทั้งทองและ BTC โดยไม่ต้องจูนใหม่:
+
+- **Lock Profit (Breakeven)**: เมื่อกำไรถึง `BreakEvenTriggerRR` (ค่าเริ่มต้น 1R)
+  SL จะถูกเลื่อนไป lock กำไรที่ `BreakEvenLockRR` (ค่าเริ่มต้น +0.2R)
+  → หลังจากนั้นไม้นี้ไม่มีทางกลายเป็นขาดทุน
+- **Trailing Stop**: เมื่อกำไรถึง `TrailStartRR` (ค่าเริ่มต้น 1R)
+  SL จะไล่ตามราคาห่าง `TrailDistanceRR` (ค่าเริ่มต้น 0.8R) เลื่อนทางเดียวเท่านั้น
+  (ขึ้นตามราคาฝั่ง Buy / ลงตามราคาฝั่ง Sell ไม่มีถอยกลับ)
+- กำไรฝั่ง Buy วัดจากราคา Bid และฝั่ง Sell วัดจากราคา Ask (รวมผลของ spread แล้ว)
+  และทุกการเลื่อน SL เคารพ stops level ขั้นต่ำของโบรกเกอร์
+- ระยะ SL เริ่มต้นของแต่ละไม้ถูกบันทึกใน Global Variables ของ terminal
+  ดังนั้นถึง EA หรือเครื่องรีสตาร์ทระหว่างถือไม้ trailing ก็ยังคำนวณ R ได้ถูกต้อง
+- TP เดิมยังอยู่ตามปกติ — ไม้จะจบที่ TP หรือโดน trailing SL ปิด แล้วแต่อะไรถึงก่อน
 
 ### สัญลักษณ์ที่ EA วาดบนกราฟ
 
