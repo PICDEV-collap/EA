@@ -67,6 +67,7 @@ Expert Advisor สำหรับ MetaTrader 5 ที่เทรดตามร
 | `MinBodyPoints` | 50 | ขนาดเนื้อเทียนขั้นต่ำของแท่งคอนเฟิร์ม (points) |
 | `MinBodyRatio` | 0.60 | สัดส่วน body/range ขั้นต่ำ (กรองแท่ง doji/ไส้ยาว) |
 | `SLBufferPoints` | 30 | ระยะเผื่อ SL ใต้/เหนือแท่งคอนเฟิร์ม (points) |
+| `AddSpreadToSL` | true | บวก spread ปัจจุบันเข้า SL ฝั่ง Sell อัตโนมัติ (จำเป็นกับ symbol spread กว้าง เช่น BTC) |
 | `RiskRewardRatio` | 2.0 | TP = ระยะ SL × ค่านี้ |
 | `AllowBuy` / `AllowSell` | true | เปิด/ปิดการเทรดแต่ละฝั่ง |
 | `UseRiskPercent` | true | คำนวณ lot จาก % ความเสี่ยง (false = ใช้ `FixedLot`) |
@@ -95,6 +96,25 @@ Expert Advisor สำหรับ MetaTrader 5 ที่เทรดตามร
 > ค่า points: ทอง (XAUUSD) ทศนิยม 2 ตำแหน่ง → 30 points = $0.30
 > ควรปรับ `RetestBufferPoints` / `MinBodyPoints` ให้เหมาะกับ symbol และความผันผวน
 > โดย backtest ใน Strategy Tester (โหมด "Every tick based on real ticks") ก่อนใช้เงินจริง
+
+### การจัดการ Spread (สำคัญกับ BTC)
+
+กราฟแสดงราคา **Bid** แต่ออเดอร์ฝั่ง Sell จะโดน SL เมื่อราคา **Ask** (= Bid + spread)
+แตะเส้น — กับ symbol ที่ spread กว้างมากอย่าง BTCUSD (spread ~1,800 points = $18)
+ถ้าตั้ง SL ไว้ที่ High ของแท่งคอนเฟิร์มพอดี จะโดน spread กินจน stop-out
+ทั้งที่กราฟยังไม่แตะเส้นเลย
+
+EA จัดการให้อัตโนมัติ:
+
+- `AddSpreadToSL = true` → ฝั่ง Sell จะบวก spread ขณะเข้าออเดอร์เพิ่มเข้าไปใน SL
+  (ฝั่ง Buy ไม่ต้องบวก เพราะ SL ฝั่ง Buy ทำงานด้วยราคา Bid ตรงกับกราฟอยู่แล้ว)
+- ระยะ SL ที่กว้างขึ้นถูกนำไปคิด lot ตาม `RiskPercent` ด้วย ความเสี่ยงต่อไม้จึงเท่าเดิม
+- SL/TP ถูกตรวจกับระยะขั้นต่ำของโบรกเกอร์ (stops level) ให้เสมอ จะไม่โดน reject
+- ขนาด spread และระยะ SL จริง (เป็น points) ถูกพิมพ์ลง log ทุกครั้งที่เข้าออเดอร์
+
+> สำหรับ BTC แนะนำเพิ่ม `SLBufferPoints` / `RetestBufferPoints` / `MinBodyPoints`
+> ให้สัมพันธ์กับราคา เช่น `SLBufferPoints = 1000–2000` (= $10–$20)
+> เพราะค่าเริ่มต้น 30 points (= $0.30) ออกแบบไว้สำหรับทอง
 
 ### Disclaimer
 

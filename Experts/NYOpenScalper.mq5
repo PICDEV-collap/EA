@@ -33,6 +33,7 @@ input int      RetestBufferPoints = 30;     // Retest zone buffer (points)
 input int      MinBodyPoints      = 50;     // Confirmation: min candle body (points)
 input double   MinBodyRatio       = 0.60;   // Confirmation: min body/range ratio (0..1)
 input int      SLBufferPoints     = 30;     // SL buffer beyond confirmation candle (points)
+input bool     AddSpreadToSL      = true;   // Add live spread to SELL SL (wide-spread symbols e.g. BTC)
 input double   RiskRewardRatio    = 2.0;    // TP = SL distance x RR
 input bool     AllowBuy           = true;   // Allow BUY setups
 input bool     AllowSell          = true;   // Allow SELL setups
@@ -374,13 +375,25 @@ void EnterTrade(const double confirmHigh, const double confirmLow)
       return;
      }
 
+   double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double spread = ask - bid;
+
+   //--- broker minimum distance for SL/TP from the current price
+   double minDist = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+
    double slBuffer = SLBufferPoints * _Point;
    double entry, sl, tp;
 
    if(g_dir > 0)
      {
-      entry = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      //--- BUY: filled at Ask, but SL/TP are triggered by Bid.
+      //    Chart prices (candle low) are Bid prices, so no spread
+      //    adjustment is needed on the SL itself.
+      entry = ask;
       sl    = confirmLow - slBuffer;
+      if(bid - sl < minDist)
+         sl = bid - minDist;
       if(sl >= entry)
         {
          Print("NYOpenScalper: invalid BUY SL (above entry), trade skipped");
@@ -388,11 +401,22 @@ void EnterTrade(const double confirmHigh, const double confirmLow)
          return;
         }
       tp = entry + (entry - sl) * RiskRewardRatio;
+      if(tp - bid < minDist)
+         tp = bid + minDist;
      }
    else
      {
-      entry = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      //--- SELL: filled at Bid, but SL/TP are triggered by Ask
+      //    (= Bid + spread). On wide-spread symbols (e.g. BTC with
+      //    spread ~1800 points) an SL placed right at the candle
+      //    high gets hit by the spread alone, so the live spread is
+      //    added on top of the buffer.
+      entry = bid;
       sl    = confirmHigh + slBuffer;
+      if(AddSpreadToSL)
+         sl += spread;
+      if(sl - ask < minDist)
+         sl = ask + minDist;
       if(sl <= entry)
         {
          Print("NYOpenScalper: invalid SELL SL (below entry), trade skipped");
@@ -400,10 +424,22 @@ void EnterTrade(const double confirmHigh, const double confirmLow)
          return;
         }
       tp = entry - (sl - entry) * RiskRewardRatio;
+      if(ask - tp < minDist)
+         tp = ask - minDist;
+      if(tp <= 0.0)
+        {
+         Print("NYOpenScalper: invalid SELL TP, trade skipped");
+         g_state = ST_DONE;
+         return;
+        }
      }
 
    sl = NormalizeDouble(sl, _Digits);
    tp = NormalizeDouble(tp, _Digits);
+
+   PrintFormat("NYOpenScalper: spread=%s points  SL distance=%s points",
+               DoubleToString(spread / _Point, 0),
+               DoubleToString(MathAbs(entry - sl) / _Point, 0));
 
    double lot = CalcLot(MathAbs(entry - sl));
    if(lot <= 0.0)
