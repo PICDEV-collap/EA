@@ -48,6 +48,7 @@ input group "=== Limits / misc ==="
 input int      MaxTradesPerDay    = 1;      // Max trades per day
 input long     MagicNumber        = 20260611; // Magic number
 input bool     DrawRangeLines     = true;   // Draw opening range lines on chart
+input bool     DrawSignals        = true;   // Mark breakout/retest/confirm/entry on chart
 
 //--- State machine
 enum ENUM_SETUP_STATE
@@ -98,7 +99,8 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   DeleteRangeLines();
+   //--- remove every chart object created by this EA
+   ObjectsDeleteAll(0, "NYOS_");
   }
 
 //+------------------------------------------------------------------+
@@ -153,7 +155,7 @@ void ResetDay(const datetime dayStart)
    g_rangeLow     = 0.0;
    g_lastM1Bar    = 0;
    g_tradesToday  = 0;
-   DeleteRangeLines();
+   //--- objects of previous days are kept on the chart for review
   }
 
 //+------------------------------------------------------------------+
@@ -191,13 +193,14 @@ void TryCaptureRange(const datetime now)
 //+------------------------------------------------------------------+
 void ProcessClosedM1Bar()
   {
-   double op = iOpen(_Symbol,  PERIOD_M1, 1);
-   double hi = iHigh(_Symbol,  PERIOD_M1, 1);
-   double lo = iLow(_Symbol,   PERIOD_M1, 1);
-   double cl = iClose(_Symbol, PERIOD_M1, 1);
+   datetime t1 = iTime(_Symbol,  PERIOD_M1, 1);
+   double   op = iOpen(_Symbol,  PERIOD_M1, 1);
+   double   hi = iHigh(_Symbol,  PERIOD_M1, 1);
+   double   lo = iLow(_Symbol,   PERIOD_M1, 1);
+   double   cl = iClose(_Symbol, PERIOD_M1, 1);
 
    //--- ignore candles formed before the range existed
-   if(iTime(_Symbol, PERIOD_M1, 1) < g_sessionStart + 5 * 60)
+   if(t1 < g_sessionStart + 5 * 60)
       return;
 
    double buffer = RetestBufferPoints * _Point;
@@ -213,6 +216,7 @@ void ProcessClosedM1Bar()
             g_dir   = 1;
             g_state = ST_WAIT_RETEST;
             Print("NYOpenScalper: BUY breakout (body close above High), waiting for retest");
+            MarkBreakout(1, t1, hi, lo);
            }
          //--- SELL breakout: bearish candle CLOSES below the range low
          else if(AllowSell && cl < g_rangeLow && cl < op)
@@ -220,6 +224,7 @@ void ProcessClosedM1Bar()
             g_dir   = -1;
             g_state = ST_WAIT_RETEST;
             Print("NYOpenScalper: SELL breakout (body close below Low), waiting for retest");
+            MarkBreakout(-1, t1, hi, lo);
            }
          break;
         }
@@ -227,7 +232,7 @@ void ProcessClosedM1Bar()
       //================================================================
       case ST_WAIT_RETEST:
         {
-         if(CheckInvalidation(op, cl))
+         if(CheckInvalidation(op, cl, t1, hi, lo))
             break;
 
          if(g_dir > 0)
@@ -235,9 +240,13 @@ void ProcessClosedM1Bar()
             //--- pullback touches the broken High zone
             if(lo <= g_rangeHigh + buffer)
               {
+               MarkRetest(1, t1, hi, lo);
                //--- retest + confirmation can happen on the same candle
                if(IsConfirmCandle(op, hi, lo, cl, g_dir))
+                 {
+                  MarkConfirm(1, t1, hi, lo);
                   EnterTrade(hi, lo);
+                 }
                else
                  {
                   g_state = ST_WAIT_CONFIRM;
@@ -250,8 +259,12 @@ void ProcessClosedM1Bar()
             //--- pullback touches the broken Low zone
             if(hi >= g_rangeLow - buffer)
               {
+               MarkRetest(-1, t1, hi, lo);
                if(IsConfirmCandle(op, hi, lo, cl, g_dir))
+                 {
+                  MarkConfirm(-1, t1, hi, lo);
                   EnterTrade(hi, lo);
+                 }
                else
                  {
                   g_state = ST_WAIT_CONFIRM;
@@ -265,11 +278,14 @@ void ProcessClosedM1Bar()
       //================================================================
       case ST_WAIT_CONFIRM:
         {
-         if(CheckInvalidation(op, cl))
+         if(CheckInvalidation(op, cl, t1, hi, lo))
             break;
 
          if(IsConfirmCandle(op, hi, lo, cl, g_dir))
+           {
+            MarkConfirm(g_dir, t1, hi, lo);
             EnterTrade(hi, lo);
+           }
          //--- no confirmation yet: keep waiting (until window cutoff
          //    or invalidation). Never enter just because price hit
          //    the line - that is the "no confirm = no entry" rule.
@@ -286,7 +302,8 @@ void ProcessClosedM1Bar()
 //| of the range -> cancel the setup and re-arm breakout detection   |
 //| (this closed candle may itself qualify as the opposite breakout) |
 //+------------------------------------------------------------------+
-bool CheckInvalidation(const double op, const double cl)
+bool CheckInvalidation(const double op, const double cl,
+                       const datetime barTime, const double hi, const double lo)
   {
    bool invalidated = false;
 
@@ -300,6 +317,7 @@ bool CheckInvalidation(const double op, const double cl)
 
    PrintFormat("NYOpenScalper: %s setup invalidated (close through opposite side of range)",
                g_dir > 0 ? "BUY" : "SELL");
+   MarkCancel(g_dir, barTime, hi, lo);
 
    int oldDir = g_dir;
    g_dir   = 0;
@@ -311,12 +329,14 @@ bool CheckInvalidation(const double op, const double cl)
       g_dir   = -1;
       g_state = ST_WAIT_RETEST;
       Print("NYOpenScalper: SELL breakout (body close below Low), waiting for retest");
+      MarkBreakout(-1, barTime, hi, lo);
      }
    else if(oldDir < 0 && AllowBuy && cl > g_rangeHigh && cl > op)
      {
       g_dir   = 1;
       g_state = ST_WAIT_RETEST;
       Print("NYOpenScalper: BUY breakout (body close above High), waiting for retest");
+      MarkBreakout(1, barTime, hi, lo);
      }
 
    return(true);
@@ -407,6 +427,7 @@ void EnterTrade(const double confirmHigh, const double confirmLow)
                   DoubleToString(lot, 2),
                   DoubleToString(sl, _Digits),
                   DoubleToString(tp, _Digits));
+      MarkEntry(g_dir, TimeCurrent(), entry, sl, tp, lot);
      }
    else
       PrintFormat("NYOpenScalper: order failed  retcode=%d  (%s)",
@@ -454,32 +475,172 @@ double CalcLot(const double slDistance)
 
 //+------------------------------------------------------------------+
 //| Chart objects                                                    |
+//|                                                                  |
+//| Every object name starts with "NYOS_" and embeds the bar time so |
+//| markers of previous days stay on the chart for review. All of    |
+//| them are removed at once when the EA is taken off the chart.     |
+//+------------------------------------------------------------------+
+string ObjName(const string tag, const datetime t)
+  {
+   return("NYOS_" + tag + "_" + TimeToString(t, TIME_DATE | TIME_MINUTES));
+  }
+
+//--- vertical offset so labels do not sit on top of the candles
+double LabelOffset()
+  {
+   double range = g_rangeHigh - g_rangeLow;
+   return(MathMax(range * 0.10, 20 * _Point));
+  }
+
+//+------------------------------------------------------------------+
+//| Opening range lines + captions                                   |
 //+------------------------------------------------------------------+
 void DrawRange()
   {
    datetime from = g_sessionStart;
    datetime to   = g_sessionStart + (datetime)WindowMinutes * 60;
 
-   DrawLine("NYOS_High", from, to, g_rangeHigh, clrLimeGreen);
-   DrawLine("NYOS_Low",  from, to, g_rangeLow,  clrOrangeRed);
+   DrawLine(ObjName("RangeHigh", g_sessionStart), from, to, g_rangeHigh, clrLimeGreen);
+   DrawLine(ObjName("RangeLow",  g_sessionStart), from, to, g_rangeLow,  clrOrangeRed);
+
+   DrawText(ObjName("RangeHighLbl", g_sessionStart), from, g_rangeHigh + LabelOffset() * 0.3,
+            "OR High", clrLimeGreen, ANCHOR_LEFT_LOWER);
+   DrawText(ObjName("RangeLowLbl", g_sessionStart), from, g_rangeLow - LabelOffset() * 0.3,
+            "OR Low", clrOrangeRed, ANCHOR_LEFT_UPPER);
   }
 
+//+------------------------------------------------------------------+
+//| Signal markers (breakout / retest / confirm / cancel)            |
+//+------------------------------------------------------------------+
+void MarkBreakout(const int dir, const datetime t, const double hi, const double lo)
+  {
+   if(!DrawSignals)
+      return;
+   MarkCandle(dir, t, hi, lo, "BREAK", 233, 234, clrDodgerBlue);
+  }
+
+void MarkRetest(const int dir, const datetime t, const double hi, const double lo)
+  {
+   if(!DrawSignals)
+      return;
+   //--- the retest of a BUY setup touches from above -> mark below the candle
+   MarkCandle(dir, t, hi, lo, "RETEST", 161, 161, clrGold);
+  }
+
+void MarkConfirm(const int dir, const datetime t, const double hi, const double lo)
+  {
+   if(!DrawSignals)
+      return;
+   MarkCandle(dir, t, hi, lo, "CONFIRM", 233, 234,
+              dir > 0 ? clrLime : clrRed);
+  }
+
+void MarkCancel(const int dir, const datetime t, const double hi, const double lo)
+  {
+   if(!DrawSignals)
+      return;
+   MarkCandle(dir, t, hi, lo, "CANCEL", 251, 251, clrGray);
+  }
+
+//--- arrow + caption attached below (BUY setups) / above (SELL setups)
+//    the candle; arrowUp/arrowDown are Wingdings codes
+void MarkCandle(const int dir, const datetime t, const double hi, const double lo,
+                const string text, const int arrowUp, const int arrowDown,
+                const color clr)
+  {
+   double offset = LabelOffset();
+   string suffix = (dir > 0 ? "_B" : "_S");
+
+   if(dir > 0)
+     {
+      DrawArrow(ObjName(text + suffix, t), t, lo - offset * 0.4, arrowUp, clr, ANCHOR_TOP);
+      DrawText(ObjName(text + suffix + "Lbl", t), t, lo - offset, text, clr, ANCHOR_UPPER);
+     }
+   else
+     {
+      DrawArrow(ObjName(text + suffix, t), t, hi + offset * 0.4, arrowDown, clr, ANCHOR_BOTTOM);
+      DrawText(ObjName(text + suffix + "Lbl", t), t, hi + offset, text, clr, ANCHOR_LOWER);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Entry visualization: arrow at fill price + SL / TP lines         |
+//+------------------------------------------------------------------+
+void MarkEntry(const int dir, const datetime t, const double entry,
+               const double sl, const double tp, const double lot)
+  {
+   if(!DrawSignals)
+      return;
+
+   datetime to = t + 30 * 60; // SL/TP lines drawn 30 minutes forward
+
+   //--- entry arrow (built-in buy/sell arrow objects)
+   string entryName = ObjName(dir > 0 ? "ENTRY_B" : "ENTRY_S", t);
+   ObjectDelete(0, entryName);
+   if(ObjectCreate(0, entryName, dir > 0 ? OBJ_ARROW_BUY : OBJ_ARROW_SELL, 0, t, entry))
+      ObjectSetInteger(0, entryName, OBJPROP_SELECTABLE, false);
+
+   string caption = StringFormat("%s %s @ %s",
+                                 dir > 0 ? "BUY" : "SELL",
+                                 DoubleToString(lot, 2),
+                                 DoubleToString(entry, _Digits));
+   DrawText(ObjName("EntryLbl", t), t, entry,
+            caption, dir > 0 ? clrLime : clrRed,
+            dir > 0 ? ANCHOR_RIGHT_UPPER : ANCHOR_RIGHT_LOWER);
+
+   //--- SL line (red, dashed) + label
+   DrawLine(ObjName("SL", t), t, to, sl, clrRed, STYLE_DASH, 1);
+   DrawText(ObjName("SLLbl", t), to, sl,
+            "SL " + DoubleToString(sl, _Digits), clrRed, ANCHOR_LEFT);
+
+   //--- TP line (green, dashed) + label
+   DrawLine(ObjName("TP", t), t, to, tp, clrLimeGreen, STYLE_DASH, 1);
+   DrawText(ObjName("TPLbl", t), to, tp,
+            "TP " + DoubleToString(tp, _Digits), clrLimeGreen, ANCHOR_LEFT);
+  }
+
+//+------------------------------------------------------------------+
+//| Low-level drawing helpers                                        |
+//+------------------------------------------------------------------+
 void DrawLine(const string name, const datetime from, const datetime to,
-              const double price, const color clr)
+              const double price, const color clr,
+              const ENUM_LINE_STYLE style = STYLE_SOLID, const int width = 2)
   {
    ObjectDelete(0, name);
    if(!ObjectCreate(0, name, OBJ_TREND, 0, from, price, to, price))
       return;
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
    ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
   }
 
-void DeleteRangeLines()
+void DrawArrow(const string name, const datetime t, const double price,
+               const int code, const color clr, const ENUM_ARROW_ANCHOR anchor)
   {
-   ObjectDelete(0, "NYOS_High");
-   ObjectDelete(0, "NYOS_Low");
+   ObjectDelete(0, name);
+   if(!ObjectCreate(0, name, OBJ_ARROW, 0, t, price))
+      return;
+   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, code);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+  }
+
+void DrawText(const string name, const datetime t, const double price,
+              const string text, const color clr, const ENUM_ANCHOR_POINT anchor)
+  {
+   ObjectDelete(0, name);
+   if(!ObjectCreate(0, name, OBJ_TEXT, 0, t, price))
+      return;
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
   }
 
 //+------------------------------------------------------------------+
